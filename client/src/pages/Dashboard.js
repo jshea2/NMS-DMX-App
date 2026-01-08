@@ -133,7 +133,7 @@ const useHTPMetadata = (state, config, channelOverrides, frozenChannels = {}) =>
   }, [state, config, channelOverrides, frozenChannels]);
 };
 
-const HomePage = ({ layoutSlug }) => {
+const Dashboard = () => {
   const navigate = useNavigate();
   const { state, sendUpdate, connected } = useWebSocket();
   const [config, setConfig] = useState(null);
@@ -178,32 +178,32 @@ const HomePage = ({ layoutSlug }) => {
       .then(res => res.json())
       .then(data => {
         setConfig(data);
-        // Find layout by slug or isHome flag
+        // Find active layout by activeLayoutId or fall back to first layout or isHome
         let layout;
-        if (layoutSlug === 'home') {
-          layout = data.showLayouts?.find(l => l.isHome);
-        } else {
-          layout = data.showLayouts?.find(l => l.urlSlug === layoutSlug);
+        if (data.activeLayoutId) {
+          layout = data.showLayouts?.find(l => l.id === data.activeLayoutId);
+        }
+        if (!layout) {
+          layout = data.showLayouts?.find(l => l.isHome) || data.showLayouts?.[0];
         }
         // Fallback to creating a default layout if none found
         if (!layout) {
           layout = {
             id: 'default',
             name: 'Default Layout',
-            urlSlug: 'home',
             isHome: true,
             showName: false,
             backgroundColor: '#1a1a2e',
-            logo: null,
-            title: 'Lighting',
             showBlackoutButton: true,
+            showLayoutSelector: true,
+            showSettingsButton: true,
             sections: []
           };
         }
         setActiveLayout(layout);
       })
       .catch(err => console.error('Failed to fetch config:', err));
-  }, [layoutSlug]);
+  }, []);
 
   const handleBlackout = () => {
     sendUpdate({ blackout: !state.blackout });
@@ -344,6 +344,48 @@ const HomePage = ({ layoutSlug }) => {
     setFrozenChannels({});
   };
 
+  // Change active layout - zeros out all DMX values
+  const handleLayoutChange = (layoutId) => {
+    const newLayout = config.showLayouts?.find(l => l.id === layoutId);
+    if (!newLayout) return;
+    
+    // Zero out all looks
+    const clearedLooks = {};
+    config.looks?.forEach(look => {
+      clearedLooks[look.id] = 0;
+    });
+    
+    // Zero out all fixtures
+    const clearedFixtures = {};
+    config.fixtures?.forEach(fixture => {
+      const profile = config.fixtureProfiles?.find(p => p.id === fixture.profileId);
+      if (profile) {
+        clearedFixtures[fixture.id] = {};
+        profile.channels.forEach(ch => {
+          clearedFixtures[fixture.id][ch.name] = 0;
+        });
+      }
+    });
+    
+    // Send the zeroed state
+    sendUpdate({ looks: clearedLooks, fixtures: clearedFixtures, blackout: false });
+    
+    // Clear local state
+    setChannelOverrides({});
+    setManuallyAdjusted({});
+    setFrozenChannels({});
+    
+    // Update active layout in config
+    fetch('/api/config/active-layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeLayoutId: layoutId })
+    }).catch(err => console.error('Failed to save active layout:', err));
+    
+    // Set the new layout
+    setActiveLayout(newLayout);
+  };
+
   // Get color for slider based on channel name
   const getSliderColor = (channelName) => {
     const name = channelName.toLowerCase();
@@ -404,6 +446,31 @@ const HomePage = ({ layoutSlug }) => {
   return (
     <div className="app" style={{ background: activeLayout.backgroundColor || '#1a1a2e' }}>
       <div className="header">
+        {/* Layout Selector Dropdown */}
+        {activeLayout.showLayoutSelector !== false && config.showLayouts?.length > 1 && (
+          <div style={{ marginBottom: '12px' }}>
+            <select
+              value={activeLayout.id}
+              onChange={(e) => handleLayoutChange(e.target.value)}
+              style={{
+                background: '#2a2a3e',
+                border: '1px solid #444',
+                borderRadius: '6px',
+                padding: '8px 12px',
+                color: '#f0f0f0',
+                fontSize: '14px',
+                cursor: 'pointer',
+                minWidth: '150px'
+              }}
+            >
+              {config.showLayouts.map(layout => (
+                <option key={layout.id} value={layout.id}>
+                  {layout.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {activeLayout.logo && (
           <div style={{ marginBottom: '12px', textAlign: 'center' }}>
             <img
@@ -413,11 +480,8 @@ const HomePage = ({ layoutSlug }) => {
             />
           </div>
         )}
-        <h1>{activeLayout.title || 'Lighting'}</h1>
         {activeLayout.showName && (
-          <p style={{ fontSize: '14px', color: '#888', marginTop: '4px', marginBottom: '8px' }}>
-            {activeLayout.name}
-          </p>
+          <h1>{activeLayout.name}</h1>
         )}
         {activeLayout.showBlackoutButton !== false && (
           <button
@@ -598,11 +662,13 @@ const HomePage = ({ layoutSlug }) => {
         );
       })}
 
-      <button className="settings-btn" onClick={() => navigate('/settings')}>
-        ⚙
-      </button>
+      {activeLayout.showSettingsButton !== false && (
+        <button className="settings-btn" onClick={() => navigate('/settings')}>
+          ⚙
+        </button>
+      )}
     </div>
   );
 };
 
-export default HomePage;
+export default Dashboard;

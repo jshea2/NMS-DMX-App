@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 // Color options for look themes
@@ -26,7 +26,11 @@ const TABS = [
 const SettingsPage = () => {
   const navigate = useNavigate();
   const [config, setConfig] = useState(null);
+  const [originalConfig, setOriginalConfig] = useState(null);  // Track original for comparison
   const [saved, setSaved] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [showUnsavedModal, setShowUnsavedModal] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState(null);
   const [networkInterfaces, setNetworkInterfaces] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
   const [activeTab, setActiveTab] = useState('network');
@@ -36,6 +40,10 @@ const SettingsPage = () => {
   const [collapsedLayouts, setCollapsedLayouts] = useState({});
   const [patchViewerUniverse, setPatchViewerUniverse] = useState(1);
   const [draggingFixture, setDraggingFixture] = useState(null);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+  const [duplicateFixtureIndex, setDuplicateFixtureIndex] = useState(null);
+  const [duplicateCount, setDuplicateCount] = useState(1);
+  const [duplicateAddressOffset, setDuplicateAddressOffset] = useState(0);
 
   const toggleSection = (section) => {
     setCollapsedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -56,7 +64,11 @@ const SettingsPage = () => {
   const fetchConfig = () => {
     fetch('/api/config')
       .then(res => res.json())
-      .then(data => setConfig(data))
+      .then(data => {
+        setConfig(data);
+        setOriginalConfig(JSON.stringify(data));
+        setHasUnsavedChanges(false);
+      })
       .catch(err => console.error('Failed to fetch config:', err));
   };
 
@@ -69,57 +81,47 @@ const SettingsPage = () => {
       .then(res => res.json())
       .then(() => {
         setSaved(true);
+        setOriginalConfig(JSON.stringify(config));
+        setHasUnsavedChanges(false);
         setTimeout(() => setSaved(false), 2000);
       })
       .catch(err => console.error('Failed to save config:', err));
   };
 
-  const handleReset = () => {
-    if (window.confirm('Are you sure you want to reset to default configuration?')) {
-      fetch('/api/config/reset', { method: 'POST' })
-        .then(res => res.json())
-        .then(data => setConfig(data.config))
-        .catch(err => console.error('Failed to reset config:', err));
+  // Track changes to config
+  useEffect(() => {
+    if (config && originalConfig) {
+      const hasChanges = JSON.stringify(config) !== originalConfig;
+      setHasUnsavedChanges(hasChanges);
+    }
+  }, [config, originalConfig]);
+
+  // Navigation with unsaved changes warning
+  const handleNavigation = useCallback((path) => {
+    if (hasUnsavedChanges) {
+      setPendingNavigation(path);
+      setShowUnsavedModal(true);
+    } else {
+      navigate(path);
+    }
+  }, [hasUnsavedChanges, navigate]);
+
+  const handleDiscardChanges = () => {
+    setShowUnsavedModal(false);
+    setHasUnsavedChanges(false);
+    if (pendingNavigation) {
+      navigate(pendingNavigation);
     }
   };
 
-  const handleExport = () => {
-    fetch('/api/config/export')
-      .then(res => res.text())
-      .then(data => {
-        const blob = new Blob([data], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'dmx-config.json';
-        a.click();
-        URL.revokeObjectURL(url);
-      })
-      .catch(err => console.error('Failed to export config:', err));
-  };
-
-  const handleImport = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const imported = JSON.parse(e.target.result);
-          fetch('/api/config/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(imported)
-          })
-            .then(res => res.json())
-            .then(data => setConfig(data.config))
-            .catch(err => console.error('Failed to import config:', err));
-        } catch (error) {
-          alert('Invalid config file');
-        }
-      };
-      reader.readAsText(file);
+  const handleSaveAndNavigate = () => {
+    handleSave();
+    setShowUnsavedModal(false);
+    if (pendingNavigation) {
+      setTimeout(() => navigate(pendingNavigation), 100);
     }
   };
+
 
   const handleCaptureLook = (lookId) => {
     if (window.confirm('Capture current fixture values into this look?')) {
@@ -166,13 +168,25 @@ const SettingsPage = () => {
   };
 
   // === FIXTURE PROFILE FUNCTIONS ===
+  // Helper to generate unique profile name
+  const getUniqueProfileName = (baseName, existingProfiles) => {
+    const existingNames = existingProfiles.map(p => p.name);
+    if (!existingNames.includes(baseName)) return baseName;
+    let counter = 1;
+    while (existingNames.includes(`${baseName}${counter}`)) {
+      counter++;
+    }
+    return `${baseName}${counter}`;
+  };
+
   const addProfile = () => {
     const newConfig = { ...config };
     if (!newConfig.fixtureProfiles) newConfig.fixtureProfiles = [];
     const newId = `profile-${Date.now()}`;
+    const name = getUniqueProfileName('New Profile', newConfig.fixtureProfiles);
     newConfig.fixtureProfiles.push({
       id: newId,
-      name: 'New Profile',
+      name,
       channels: [{ name: 'intensity', offset: 0 }]
     });
     setConfig(newConfig);
@@ -187,9 +201,10 @@ const SettingsPage = () => {
   const duplicateProfile = (index) => {
     const newConfig = { ...config };
     const original = newConfig.fixtureProfiles[index];
+    const name = getUniqueProfileName(original.name, newConfig.fixtureProfiles);
     const duplicate = {
       id: `profile-${Date.now()}`,
-      name: `${original.name} (Copy)`,
+      name,
       channels: original.channels.map(ch => ({ ...ch }))
     };
     // Insert right after the original
@@ -666,16 +681,61 @@ const SettingsPage = () => {
   };
 
   // === FIXTURE FUNCTIONS ===
+  // Helper to generate unique fixture name
+  const getUniqueFixtureName = (baseName, existingFixtures) => {
+    const existingNames = existingFixtures.map(f => f.name);
+    if (!existingNames.includes(baseName)) return baseName;
+    let counter = 1;
+    while (existingNames.includes(`${baseName}${counter}`)) {
+      counter++;
+    }
+    return `${baseName}${counter}`;
+  };
+
+  // Helper to find next available address in a universe
+  const getNextAddress = (fixtures, universe, profileId, profiles) => {
+    const profile = profiles?.find(p => p.id === profileId);
+    const channelCount = profile?.channels?.length || 1;
+    
+    // Get all fixtures in this universe
+    const universeFixtures = fixtures.filter(f => f.universe === universe);
+    if (universeFixtures.length === 0) return 1;
+    
+    // Find the highest end address
+    let maxEndAddress = 0;
+    universeFixtures.forEach(f => {
+      const fProfile = profiles?.find(p => p.id === f.profileId);
+      const fChannelCount = fProfile?.channels?.length || 1;
+      const endAddress = f.startAddress + fChannelCount - 1;
+      if (endAddress > maxEndAddress) maxEndAddress = endAddress;
+    });
+    
+    const nextAddress = maxEndAddress + 1;
+    // If it would exceed 512, wrap or return 1
+    return nextAddress <= 512 ? nextAddress : 1;
+  };
+
   const addFixture = () => {
     const newConfig = { ...config };
     const newId = `fixture-${Date.now()}`;
     const defaultProfile = newConfig.fixtureProfiles?.[0]?.id || 'intensity-1ch';
+    
+    // Get universe from last fixture, or default to 1
+    const lastFixture = newConfig.fixtures[newConfig.fixtures.length - 1];
+    const universe = lastFixture?.universe || 1;
+    
+    // Get next available address
+    const startAddress = getNextAddress(newConfig.fixtures, universe, defaultProfile, newConfig.fixtureProfiles);
+    
+    // Get unique name
+    const name = getUniqueFixtureName('New Fixture', newConfig.fixtures);
+    
     newConfig.fixtures.push({
       id: newId,
-      name: 'New Fixture',
+      name,
       profileId: defaultProfile,
-      universe: 1,
-      startAddress: 1,
+      universe,
+      startAddress,
       showOnMain: true
     });
     // Initialize look targets for new fixture
@@ -693,7 +753,76 @@ const SettingsPage = () => {
     newConfig.looks.forEach(look => {
       delete look.targets[fixtureId];
     });
+    // Remove from all layout sections
+    newConfig.showLayouts?.forEach(layout => {
+      layout.sections?.forEach(section => {
+        section.items = section.items.filter(item => !(item.type === 'fixture' && item.id === fixtureId));
+      });
+    });
     setConfig(newConfig);
+  };
+
+  // Open duplicate modal
+  const openDuplicateModal = (index) => {
+    const fixture = config.fixtures[index];
+    const profile = config.fixtureProfiles?.find(p => p.id === fixture.profileId);
+    const channelCount = profile?.channels?.length || 1;
+    setDuplicateFixtureIndex(index);
+    setDuplicateCount(1);
+    setDuplicateAddressOffset(channelCount); // Default offset is channel count
+    setShowDuplicateModal(true);
+  };
+
+  // Execute fixture duplication
+  const duplicateFixture = () => {
+    if (duplicateFixtureIndex === null) return;
+    if (!duplicateCount || duplicateCount <= 0) {
+      setShowDuplicateModal(false);
+      return;
+    }
+    
+    const newConfig = { ...config };
+    const sourceFixture = newConfig.fixtures[duplicateFixtureIndex];
+    const profile = newConfig.fixtureProfiles?.find(p => p.id === sourceFixture.profileId);
+    const channelCount = profile?.channels?.length || 1;
+    
+    for (let i = 0; i < duplicateCount; i++) {
+      const newId = `fixture-${Date.now()}-${i}`;
+      const newName = getUniqueFixtureName(sourceFixture.name, newConfig.fixtures);
+      
+      // Calculate address: if offset is 0, use next available; otherwise use offset
+      let newAddress;
+      if (duplicateAddressOffset === 0) {
+        newAddress = getNextAddress(newConfig.fixtures, sourceFixture.universe, sourceFixture.profileId, newConfig.fixtureProfiles);
+      } else {
+        // Get the last fixture we added (or source if first)
+        const lastInChain = newConfig.fixtures[newConfig.fixtures.length - 1];
+        newAddress = lastInChain.startAddress + duplicateAddressOffset;
+        // Wrap around if exceeds 512
+        if (newAddress > 512) newAddress = newAddress - 512;
+      }
+      
+      newConfig.fixtures.push({
+        id: newId,
+        name: newName,
+        profileId: sourceFixture.profileId,
+        universe: sourceFixture.universe,
+        artnetNet: sourceFixture.artnetNet,
+        artnetSubnet: sourceFixture.artnetSubnet,
+        artnetUniverse: sourceFixture.artnetUniverse,
+        startAddress: newAddress,
+        showOnMain: sourceFixture.showOnMain
+      });
+      
+      // Initialize look targets for new fixture
+      newConfig.looks.forEach(look => {
+        look.targets[newId] = {};
+      });
+    }
+    
+    setConfig(newConfig);
+    setShowDuplicateModal(false);
+    setDuplicateFixtureIndex(null);
   };
 
   // === LOOK FUNCTIONS ===
@@ -728,7 +857,14 @@ const SettingsPage = () => {
 
   const removeLook = (index) => {
     const newConfig = { ...config };
+    const lookId = newConfig.looks[index].id;
     newConfig.looks.splice(index, 1);
+    // Remove from all layout sections
+    newConfig.showLayouts?.forEach(layout => {
+      layout.sections?.forEach(section => {
+        section.items = section.items.filter(item => !(item.type === 'look' && item.id === lookId));
+      });
+    });
     setConfig(newConfig);
   };
 
@@ -744,12 +880,129 @@ const SettingsPage = () => {
 
   return (
     <div className="settings-page">
+      {/* Unsaved Changes Modal */}
+      {showUnsavedModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: '#2a2a3e',
+            padding: '24px',
+            borderRadius: '12px',
+            maxWidth: '400px',
+            textAlign: 'center'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0' }}>Unsaved Changes</h3>
+            <p style={{ color: '#aaa', marginBottom: '24px' }}>
+              You have unsaved changes. Would you like to save before leaving?
+            </p>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              <button className="btn btn-primary" onClick={handleSaveAndNavigate}>
+                Save & Leave
+              </button>
+              <button className="btn btn-danger" onClick={handleDiscardChanges}>
+                Discard
+              </button>
+              <button className="btn btn-secondary" onClick={() => setShowUnsavedModal(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Fixture Modal */}
+      {showDuplicateModal && duplicateFixtureIndex !== null && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: '#2a2a3e',
+            padding: '24px',
+            borderRadius: '12px',
+            maxWidth: '400px',
+            width: '90%'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0' }}>Duplicate Fixture</h3>
+            <p style={{ color: '#aaa', marginBottom: '16px' }}>
+              Duplicating: <strong>{config.fixtures[duplicateFixtureIndex]?.name}</strong>
+            </p>
+            
+            <div className="form-group" style={{ marginBottom: '16px' }}>
+              <label>Number of Copies</label>
+              <input
+                type="text"
+                value={duplicateCount}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  // Allow empty or numeric input
+                  if (val === '' || /^\d+$/.test(val)) {
+                    setDuplicateCount(val === '' ? '' : parseInt(val));
+                  }
+                }}
+                onBlur={(e) => {
+                  // On blur, ensure we have a valid number (default to 1 if empty/0)
+                  const val = parseInt(e.target.value) || 0;
+                  setDuplicateCount(val);
+                }}
+                style={{ width: '100%' }}
+                placeholder="Enter number of copies"
+              />
+            </div>
+            
+            <div className="form-group" style={{ marginBottom: '24px' }}>
+              <label>Address Offset</label>
+              <input
+                type="number"
+                min="0"
+                max="512"
+                value={duplicateAddressOffset}
+                onChange={(e) => setDuplicateAddressOffset(Math.max(0, parseInt(e.target.value) || 0))}
+                style={{ width: '100%' }}
+              />
+              <small style={{ color: '#888' }}>
+                0 = auto (next available), or specify channel offset between fixtures
+              </small>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setShowDuplicateModal(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary" onClick={duplicateFixture}>
+                Duplicate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="settings-header">
-        <h1>Settings</h1>
-        <button className="settings-btn" onClick={() => navigate('/home')} title="Go to Home">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+        <h1>Settings {hasUnsavedChanges && <span style={{ color: '#e2904a', fontSize: '14px' }}>• Unsaved</span>}</h1>
+        <button className="settings-btn" onClick={() => handleNavigation('/dashboard')} title="Go to Dashboard">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+            <rect x="2" y="2" width="9" height="9" rx="2" />
+            <rect x="13" y="2" width="9" height="9" rx="2" />
+            <rect x="2" y="13" width="9" height="9" rx="2" />
+            <rect x="13" y="13" width="9" height="9" rx="2" />
           </svg>
         </button>
       </div>
@@ -760,28 +1013,44 @@ const SettingsPage = () => {
         </div>
       )}
 
-      {/* Tab Navigation */}
-      <div className="tabs-container" style={{ display: 'flex', gap: '4px', marginBottom: '16px', flexWrap: 'wrap' }}>
-        {TABS.map(tab => (
-          <button
-            key={tab.id}
-            className={`btn tab-btn ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: '10px 16px',
-              fontSize: '14px',
-              background: activeTab === tab.id ? '#4a90e2' : '#333',
-              border: 'none',
-              borderRadius: '6px 6px 0 0',
-              color: activeTab === tab.id ? '#fff' : '#aaa',
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {/* Main Layout: Tabs on Left, Content on Right */}
+      <div style={{ display: 'flex', gap: '16px' }}>
+        {/* Vertical Tab Navigation */}
+        <div className="tabs-container" style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          gap: '2px',
+          minWidth: '160px',
+          borderRight: '2px solid #333',
+          paddingRight: '0'
+        }}>
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              className={`btn tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                padding: '10px 14px',
+                fontSize: '13px',
+                background: activeTab === tab.id ? '#2a2a2a' : 'transparent',
+                border: 'none',
+                borderRight: activeTab === tab.id ? '2px solid #4a90e2' : '2px solid transparent',
+                borderRadius: '0',
+                color: activeTab === tab.id ? '#fff' : '#888',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+                whiteSpace: 'nowrap',
+                marginRight: '-2px',
+                textAlign: 'left'
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab Content */}
+        <div style={{ flex: 1 }}>
 
       {/* Network / Output Tab */}
       {activeTab === 'network' && (
@@ -944,6 +1213,10 @@ const SettingsPage = () => {
           </div>
             </>
           )}
+
+          <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '16px' }}>
+            Save Configuration
+          </button>
         </div>
       </div>
       )}
@@ -1185,6 +1458,10 @@ const SettingsPage = () => {
               <button className="btn btn-primary" onClick={addProfile} style={{ marginTop: '12px' }}>
                 + Add Profile
               </button>
+
+          <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '16px' }}>
+            Save Configuration
+          </button>
         </div>
       </div>
       )}
@@ -1224,6 +1501,12 @@ const SettingsPage = () => {
                         <span style={{ color: '#666', fontSize: '12px', whiteSpace: 'nowrap' }}>{summary}</span>
                       )}
                       <button
+                        className="btn btn-secondary btn-small"
+                        onClick={() => openDuplicateModal(index)}
+                        style={{ padding: '4px 8px', fontSize: '12px' }}
+                        title="Duplicate Fixture"
+                      >⧉</button>
+                      <button
                         className="btn btn-danger btn-small"
                         onClick={() => removeFixture(index)}
                         style={{ padding: '4px 8px', fontSize: '12px' }}
@@ -1233,21 +1516,24 @@ const SettingsPage = () => {
                     {/* Expanded content */}
                     {!isCollapsed && (
                     <>
-                    <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap' }}>
-                      <div className="form-group" style={{ flex: 1, minWidth: '150px', marginBottom: '8px' }}>
-                        <label>Profile</label>
-                        <select
-                          value={fixture.profileId || ''}
-                          onChange={(e) => updateFixture(index, 'profileId', e.target.value)}
-                        >
-                          {(config.fixtureProfiles || []).map(p => (
-                            <option key={p.id} value={p.id}>{p.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                    {/* Row 1: Profile */}
+                    <div className="form-group" style={{ marginTop: '12px', marginBottom: '12px' }}>
+                      <label>Profile</label>
+                      <select
+                        value={fixture.profileId || ''}
+                        onChange={(e) => updateFixture(index, 'profileId', e.target.value)}
+                      >
+                        {(config.fixtureProfiles || []).map(p => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Row 2: Universe/Address */}
+                    <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
                       {config.network.protocol === 'artnet' ? (
                         <>
-                          <div className="form-group" style={{ width: '70px', marginBottom: '8px' }}>
+                          <div className="form-group" style={{ width: '80px', marginBottom: 0 }}>
                             <label>Net</label>
                             <input
                               type="number"
@@ -1257,7 +1543,7 @@ const SettingsPage = () => {
                               onChange={(e) => updateFixture(index, 'artnetNet', parseInt(e.target.value))}
                             />
                           </div>
-                          <div className="form-group" style={{ width: '70px', marginBottom: '8px' }}>
+                          <div className="form-group" style={{ width: '80px', marginBottom: 0 }}>
                             <label>Subnet</label>
                             <input
                               type="number"
@@ -1267,7 +1553,7 @@ const SettingsPage = () => {
                               onChange={(e) => updateFixture(index, 'artnetSubnet', parseInt(e.target.value))}
                             />
                           </div>
-                          <div className="form-group" style={{ width: '70px', marginBottom: '8px' }}>
+                          <div className="form-group" style={{ width: '80px', marginBottom: 0 }}>
                             <label>Universe</label>
                             <input
                               type="number"
@@ -1279,7 +1565,7 @@ const SettingsPage = () => {
                           </div>
                         </>
                       ) : (
-                        <div className="form-group" style={{ width: '100px', marginBottom: '8px' }}>
+                        <div className="form-group" style={{ width: '100px', marginBottom: 0 }}>
                           <label>Universe</label>
                           <input
                             type="number"
@@ -1290,7 +1576,7 @@ const SettingsPage = () => {
                           />
                         </div>
                       )}
-                      <div className="form-group" style={{ width: '100px', marginBottom: '8px' }}>
+                      <div className="form-group" style={{ width: '120px', marginBottom: 0 }}>
                         <label>Start Address</label>
                         <input
                           type="number"
@@ -1303,31 +1589,11 @@ const SettingsPage = () => {
                     </div>
 
                     {profile && (
-                      <div style={{ color: '#888', fontSize: '12px', marginBottom: '8px' }}>
+                      <div style={{ color: '#888', fontSize: '12px', marginBottom: '12px' }}>
                         Channels: {profile.channels.map(ch => `${ch.name}: ${fixture.startAddress + ch.offset}`).join(', ')}
                       </div>
                     )}
 
-                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div className="form-group checkbox-group" style={{ marginBottom: 0 }}>
-                        <input
-                          type="checkbox"
-                          id={`hideOnMain-${fixture.id}`}
-                          checked={fixture.showOnMain === false}
-                          onChange={(e) => updateFixture(index, 'showOnMain', !e.target.checked)}
-                        />
-                        <label htmlFor={`hideOnMain-${fixture.id}`}>Hide on Main UI</label>
-                      </div>
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label style={{ fontSize: '12px', color: '#666' }}>Fixture ID: </label>
-                        <input
-                          type="text"
-                          value={fixture.id}
-                          onChange={(e) => updateFixture(index, 'id', e.target.value)}
-                          style={{ width: '120px', fontSize: '12px', padding: '4px 8px' }}
-                        />
-                      </div>
-                    </div>
                     </>
                     )}
                   </div>
@@ -1484,6 +1750,10 @@ const SettingsPage = () => {
                   </div>
                 </div>
               </div>
+
+          <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '16px' }}>
+            Save Configuration
+          </button>
         </div>
       </div>
       )}
@@ -1496,22 +1766,22 @@ const SettingsPage = () => {
 
               {config.looks.map((look, lookIndex) => (
             <div key={look.id} className="look-editor" style={{ position: 'relative' }}>
-              <button
-                className="btn btn-danger btn-small"
-                onClick={() => removeLook(lookIndex)}
-                style={{ position: 'absolute', top: '8px', right: '8px', padding: '4px 8px', fontSize: '12px' }}
-              >
-                ×
-              </button>
-
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <h4 style={{ margin: 0 }}>{look.name}</h4>
-                <button
-                  className="btn btn-secondary btn-small"
-                  onClick={() => handleCaptureLook(look.id)}
-                >
-                  Record Current
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => handleCaptureLook(look.id)}
+                  >
+                    Record Current
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => removeLook(lookIndex)}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
 
               <div className="form-group">
@@ -1596,6 +1866,10 @@ const SettingsPage = () => {
               <button className="btn btn-primary" onClick={addLook} style={{ marginTop: '12px' }}>
                 + Add Look
               </button>
+
+          <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '16px' }}>
+            Save Configuration
+          </button>
         </div>
       </div>
       )}
@@ -1742,17 +2016,6 @@ const SettingsPage = () => {
                       <small>Main page background color</small>
                     </div>
 
-                    {/* Title */}
-                    <div className="form-group">
-                      <label>Page Title</label>
-                      <input
-                        type="text"
-                        value={layout.title}
-                        onChange={(e) => updateShowLayout(layoutIndex, 'title', e.target.value)}
-                        placeholder="Lighting"
-                      />
-                    </div>
-
                     {/* Show/Hide Options */}
                     <div className="form-group checkbox-group">
                       <input
@@ -1772,6 +2035,26 @@ const SettingsPage = () => {
                         onChange={(e) => updateShowLayout(layoutIndex, 'showBlackoutButton', e.target.checked)}
                       />
                       <label htmlFor={`showBlackout-${layout.id}`}>Show Blackout Button</label>
+                    </div>
+
+                    <div className="form-group checkbox-group">
+                      <input
+                        type="checkbox"
+                        id={`showLayoutSelector-${layout.id}`}
+                        checked={layout.showLayoutSelector !== false}
+                        onChange={(e) => updateShowLayout(layoutIndex, 'showLayoutSelector', e.target.checked)}
+                      />
+                      <label htmlFor={`showLayoutSelector-${layout.id}`}>Show Layout Selector</label>
+                    </div>
+
+                    <div className="form-group checkbox-group">
+                      <input
+                        type="checkbox"
+                        id={`showSettingsButton-${layout.id}`}
+                        checked={layout.showSettingsButton !== false}
+                        onChange={(e) => updateShowLayout(layoutIndex, 'showSettingsButton', e.target.checked)}
+                      />
+                      <label htmlFor={`showSettingsButton-${layout.id}`}>Show Settings Button</label>
                     </div>
                   </div>
 
@@ -1822,19 +2105,6 @@ const SettingsPage = () => {
                                   fontWeight: '500'
                                 }}
                               />
-                              {isStatic && (
-                                <span style={{
-                                  fontSize: '10px',
-                                  padding: '3px 8px',
-                                  background: '#4a4a6a',
-                                  borderRadius: '3px',
-                                  color: '#ccc',
-                                  textTransform: 'uppercase',
-                                  fontWeight: '600'
-                                }}>
-                                  STATIC
-                                </span>
-                              )}
                               <div className="form-group checkbox-group" style={{ marginBottom: 0 }}>
                                 <input
                                   type="checkbox"
@@ -1856,28 +2126,31 @@ const SettingsPage = () => {
                               )}
                             </div>
 
-                            {/* Section Options */}
-                            <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
-                              <label style={{ fontSize: '12px', color: '#888' }}>
-                                <input
-                                  type="checkbox"
-                                  checked={section.showClearButton === true}
-                                  onChange={(e) => updateSection(layoutIndex, sectionIndex, 'showClearButton', e.target.checked)}
-                                  style={{ marginRight: '4px' }}
-                                />
-                                Show Clear Button
-                              </label>
-                            </div>
-
-                            {/* Add Item Dropdown */}
+                            {/* Add Item Dropdown - only for custom sections */}
+                            {!isStatic && (
                             <div style={{ marginBottom: '8px' }}>
                               <select
                                 onChange={(e) => {
-                                  const [type, id] = e.target.value.split(':');
-                                  if (type && id) {
-                                    addItemToSection(layoutIndex, sectionIndex, type, id);
-                                    e.target.value = '';
+                                  const value = e.target.value;
+                                  if (value === 'all:looks') {
+                                    config.looks.forEach(look => {
+                                      if (!section.items.find(i => i.type === 'look' && i.id === look.id)) {
+                                        addItemToSection(layoutIndex, sectionIndex, 'look', look.id);
+                                      }
+                                    });
+                                  } else if (value === 'all:fixtures') {
+                                    config.fixtures.forEach(fixture => {
+                                      if (!section.items.find(i => i.type === 'fixture' && i.id === fixture.id)) {
+                                        addItemToSection(layoutIndex, sectionIndex, 'fixture', fixture.id);
+                                      }
+                                    });
+                                  } else {
+                                    const [type, id] = value.split(':');
+                                    if (type && id) {
+                                      addItemToSection(layoutIndex, sectionIndex, type, id);
+                                    }
                                   }
+                                  e.target.value = '';
                                 }}
                                 style={{
                                   width: '100%',
@@ -1890,25 +2163,40 @@ const SettingsPage = () => {
                                 }}
                               >
                                 <option value="">+ Add Item to Section...</option>
+                                <option value="all:looks" style={{ fontWeight: 'bold' }}>➕ Add All Looks</option>
+                                <option value="all:fixtures" style={{ fontWeight: 'bold' }}>➕ Add All Fixtures</option>
                                 <optgroup label="Looks">
-                                  {config.looks
-                                    .filter(look => !isStatic || section.staticType === 'looks')
-                                    .map(look => (
-                                      <option key={look.id} value={`look:${look.id}`}>
-                                        {look.name}
-                                      </option>
-                                    ))}
+                                  {config.looks.map(look => (
+                                    <option key={look.id} value={`look:${look.id}`}>
+                                      {look.name}
+                                    </option>
+                                  ))}
                                 </optgroup>
                                 <optgroup label="Fixtures">
-                                  {config.fixtures
-                                    .filter(fixture => !isStatic || section.staticType === 'fixtures')
-                                    .map(fixture => (
-                                      <option key={fixture.id} value={`fixture:${fixture.id}`}>
-                                        {fixture.name}
-                                      </option>
-                                    ))}
+                                  {config.fixtures.map(fixture => (
+                                    <option key={fixture.id} value={`fixture:${fixture.id}`}>
+                                      {fixture.name}
+                                    </option>
+                                  ))}
                                 </optgroup>
                               </select>
+                            </div>
+                            )}
+
+                            {/* Visible All / Deselect All toggle */}
+                            <div style={{ marginBottom: '8px', display: 'flex', gap: '8px' }}>
+                              <button
+                                className="btn btn-secondary btn-small"
+                                onClick={() => {
+                                  const allVisible = section.items.every(item => item.visible);
+                                  section.items.forEach(item => {
+                                    updateSectionItem(layoutIndex, sectionIndex, item.id, 'visible', !allVisible);
+                                  });
+                                }}
+                                style={{ fontSize: '11px', padding: '4px 8px' }}
+                              >
+                                {section.items.every(item => item.visible) ? 'Deselect All' : 'Visible All'}
+                              </button>
                             </div>
 
                             {/* Items in Section */}
@@ -1974,7 +2262,7 @@ const SettingsPage = () => {
                                           onChange={(e) => updateSectionItem(layoutIndex, sectionIndex, item.id, 'visible', e.target.checked)}
                                         />
                                         <label htmlFor={`item-visible-${section.id}-${item.id}`} style={{ fontSize: '11px' }}>
-                                          Show
+                                          Visible
                                         </label>
                                       </div>
                                       <button
@@ -2008,6 +2296,10 @@ const SettingsPage = () => {
           <button className="btn btn-primary" onClick={addShowLayout} style={{ marginTop: '12px' }}>
             + Add Layout
           </button>
+
+          <button className="btn btn-primary" onClick={handleSave} style={{ marginTop: '16px' }}>
+            Save Configuration
+          </button>
         </div>
       </div>
       )}
@@ -2025,44 +2317,8 @@ const SettingsPage = () => {
       {/* DMX Output Tab - auto-navigate */}
       {activeTab === 'dmxoutput' && navigate('/dmx-output')}
 
-      {/* Configuration Management - Always visible */}
-      <div className="card" style={{ marginTop: '16px' }}>
-        <div className="settings-section">
-          <h3>Configuration Management</h3>
-
-          <button className="btn btn-primary" onClick={handleSave}>
-            Save Configuration
-          </button>
-
-          <button className="btn btn-secondary" onClick={handleExport}>
-            Export Config
-          </button>
-
-          <label className="btn btn-secondary" style={{ display: 'inline-block', cursor: 'pointer' }}>
-            Import Config
-            <input
-              type="file"
-              accept=".json"
-              onChange={handleImport}
-              style={{ display: 'none' }}
-            />
-          </label>
-
-          <button className="btn btn-danger" onClick={handleReset}>
-            Reset to Defaults
-          </button>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="settings-section">
-          <h3>Diagnostics</h3>
-
-          <button className="btn btn-secondary" onClick={() => navigate('/dmx-output')}>
-            DMX Output Viewer
-          </button>
-        </div>
-      </div>
+        </div>{/* End Tab Content */}
+      </div>{/* End Main Layout */}
     </div>
   );
 };

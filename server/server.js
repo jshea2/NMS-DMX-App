@@ -91,6 +91,19 @@ app.post('/api/config/reset', (req, res) => {
   res.json({ success: true, config: config.get() });
 });
 
+// Set active layout
+app.post('/api/config/active-layout', (req, res) => {
+  const { activeLayoutId } = req.body;
+  const currentConfig = config.get();
+  currentConfig.activeLayoutId = activeLayoutId;
+  const success = config.update(currentConfig);
+  if (success) {
+    res.json({ success: true, activeLayoutId });
+  } else {
+    res.status(500).json({ success: false, error: 'Failed to update active layout' });
+  }
+});
+
 // Export config
 app.get('/api/config/export', (req, res) => {
   res.setHeader('Content-Type', 'application/json');
