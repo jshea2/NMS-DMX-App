@@ -8,6 +8,7 @@ const config = require('./config');
 const state = require('./state');
 const outputEngine = require('./outputEngine');
 const dmxEngine = require('./dmxEngine');
+const clientManager = require('./clientManager');
 
 const app = express();
 const server = http.createServer(app);
@@ -126,6 +127,63 @@ app.post('/api/config/import', (req, res) => {
   }
 });
 
+// Client management endpoints
+app.get('/api/clients', (req, res) => {
+  const clients = clientManager.getAllClientsWithStatus();
+  res.json(clients);
+});
+
+app.post('/api/clients/:clientId/approve', (req, res) => {
+  const { clientId } = req.params;
+  const success = clientManager.approveClient(clientId);
+  if (success) {
+    broadcastActiveClients();
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, error: 'Client not found' });
+  }
+});
+
+app.post('/api/clients/:clientId/role', (req, res) => {
+  const { clientId } = req.params;
+  const { role } = req.body;
+
+  if (!['viewer', 'controller', 'editor'].includes(role)) {
+    return res.status(400).json({ success: false, error: 'Invalid role' });
+  }
+
+  const success = clientManager.updateRole(clientId, role);
+  if (success) {
+    broadcastActiveClients();
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, error: 'Client not found' });
+  }
+});
+
+app.post('/api/clients/:clientId/nickname', (req, res) => {
+  const { clientId } = req.params;
+  const { nickname } = req.body;
+
+  const success = clientManager.updateNickname(clientId, nickname);
+  if (success) {
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, error: 'Client not found' });
+  }
+});
+
+app.delete('/api/clients/:clientId', (req, res) => {
+  const { clientId } = req.params;
+  const success = clientManager.removeClient(clientId);
+  if (success) {
+    broadcastActiveClients();
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, error: 'Client not found' });
+  }
+});
+
 // Capture current state into a look
 app.post('/api/looks/:lookId/capture', (req, res) => {
   const { lookId } = req.params;
@@ -158,8 +216,11 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // WebSocket handling
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('Client connected via WebSocket');
+
+  let clientId = null;
+  let clientRole = 'viewer';
 
   // Send current state immediately
   ws.send(JSON.stringify({
@@ -172,7 +233,65 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(message);
 
+      // Authentication handshake
+      if (msg.type === 'auth') {
+        clientId = msg.clientId;
+
+        if (!clientId) {
+          ws.send(JSON.stringify({
+            type: 'authError',
+            message: 'Invalid clientId'
+          }));
+          return;
+        }
+
+        // Get or create client entry
+        const client = clientManager.getOrCreateClient(clientId, req);
+        clientRole = client.role;
+
+        // Mark as active
+        const ip = req.socket.remoteAddress || req.connection.remoteAddress;
+        const userAgent = req.headers['user-agent'] || 'Unknown';
+        clientManager.setActive(clientId, ws, ip, userAgent);
+
+        // Send auth response
+        ws.send(JSON.stringify({
+          type: 'authResult',
+          role: clientRole,
+          clientId: clientId,
+          shortId: clientId.substring(0, 6).toUpperCase()
+        }));
+
+        console.log(`Client authenticated: ${clientId.substring(0, 6)} as ${clientRole}`);
+
+        // Broadcast active clients update to all
+        broadcastActiveClients();
+        return;
+      }
+
+      // Request access (viewer requesting editor)
+      if (msg.type === 'requestAccess') {
+        if (clientId && clientRole === 'viewer') {
+          clientManager.requestAccess(clientId);
+          console.log(`Access requested by ${clientId.substring(0, 6)}`);
+
+          // Broadcast to notify settings page
+          broadcastActiveClients();
+        }
+        return;
+      }
+
+      // State update - check permissions
       if (msg.type === 'update') {
+        // Check if client has permission to edit
+        if (!clientId || !clientManager.hasPermission(clientId, 'edit')) {
+          ws.send(JSON.stringify({
+            type: 'permissionDenied',
+            message: 'You do not have permission to edit. Request access from the host.'
+          }));
+          return;
+        }
+
         state.update(msg.data);
 
         // Broadcast to all connected clients
@@ -191,9 +310,39 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('Client disconnected');
+    if (clientId) {
+      clientManager.setInactive(clientId);
+      console.log(`Client disconnected: ${clientId.substring(0, 6)}`);
+      broadcastActiveClients();
+    } else {
+      console.log('Client disconnected');
+    }
   });
 });
+
+// Helper to broadcast active clients list
+function broadcastActiveClients() {
+  const activeClients = clientManager.getActiveClients();
+  const currentConfig = config.get();
+
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({
+        type: 'activeClients',
+        clients: activeClients.map(id => {
+          const clientData = currentConfig.clients.find(c => c.id === id);
+          return {
+            id,
+            shortId: id.substring(0, 6).toUpperCase(),
+            role: clientData?.role || 'viewer',
+            nickname: clientData?.nickname || ''
+          };
+        }),
+        showConnectedUsers: currentConfig.webServer?.showConnectedUsers !== false
+      }));
+    }
+  });
+}
 
 // Listen for state changes and broadcast to all WebSocket clients
 state.addListener((newState) => {

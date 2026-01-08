@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import useWebSocket from '../hooks/useWebSocket';
 import Slider from '../components/Slider';
+import ConnectedUsers from '../components/ConnectedUsers';
 
 // HTP Metadata Hook - computes which looks control which channels
 const useHTPMetadata = (state, config, channelOverrides, frozenChannels = {}) => {
@@ -135,13 +136,14 @@ const useHTPMetadata = (state, config, channelOverrides, frozenChannels = {}) =>
 
 const Dashboard = () => {
   const navigate = useNavigate();
-  const { state, sendUpdate, connected } = useWebSocket();
+  const { state, sendUpdate, connected, role, shortId, requestAccess, activeClients } = useWebSocket();
   const [config, setConfig] = useState(null);
   const [activeLayout, setActiveLayout] = useState(null);
   const [recordingLook, setRecordingLook] = useState(null);
   const [channelOverrides, setChannelOverrides] = useState({});
   const [manuallyAdjusted, setManuallyAdjusted] = useState({});  // Tracks channels manually touched
   const [frozenChannels, setFrozenChannels] = useState({});  // Tracks frozen values after recording {key: frozenValue}
+  const [pendingRequests, setPendingRequests] = useState([]);
 
   // Compute HTP metadata
   const { metadata: htpMetadata, channelsToRelease } = useHTPMetadata(state, config, channelOverrides, frozenChannels);
@@ -173,43 +175,60 @@ const Dashboard = () => {
   }, [channelsToRelease, sendUpdate]);
 
   useEffect(() => {
-    // Fetch config to get layout and other data
-    fetch('/api/config')
-      .then(res => res.json())
-      .then(data => {
-        setConfig(data);
-        // Find active layout by activeLayoutId or fall back to first layout
-        let layout;
-        if (data.activeLayoutId) {
-          layout = data.showLayouts?.find(l => l.id === data.activeLayoutId);
-        }
-        // If no active layout set or not found, use first available layout
-        if (!layout && data.showLayouts?.length > 0) {
-          layout = data.showLayouts[0];
-          // Set it as active layout on server
-          fetch('/api/config/active-layout', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ activeLayoutId: layout.id })
-          }).catch(err => console.error('Failed to set active layout:', err));
-        }
-        // Fallback to creating a default layout if none found
-        if (!layout) {
-          layout = {
-            id: 'default',
-            name: 'Default Layout',
-            showName: false,
-            backgroundColor: '#1a1a2e',
-            showBlackoutButton: true,
-            showLayoutSelector: true,
-            showSettingsButton: true,
-            sections: []
-          };
-        }
-        setActiveLayout(layout);
-      })
-      .catch(err => console.error('Failed to fetch config:', err));
-  }, []);
+    const fetchConfigData = () => {
+      // Fetch config to get layout and other data
+      fetch('/api/config')
+        .then(res => res.json())
+        .then(data => {
+          setConfig(data);
+
+          // Check for pending access requests (only for editors)
+          if (role === 'editor' && data.clients) {
+            const pending = data.clients.filter(c => c.pendingRequest === true);
+            setPendingRequests(pending);
+          }
+
+          // Find active layout by activeLayoutId or fall back to first layout
+          let layout;
+          if (data.activeLayoutId) {
+            layout = data.showLayouts?.find(l => l.id === data.activeLayoutId);
+          }
+          // If no active layout set or not found, use first available layout
+          if (!layout && data.showLayouts?.length > 0) {
+            layout = data.showLayouts[0];
+            // Set it as active layout on server
+            fetch('/api/config/active-layout', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ activeLayoutId: layout.id })
+            }).catch(err => console.error('Failed to set active layout:', err));
+          }
+          // Fallback to creating a default layout if none found
+          if (!layout) {
+            layout = {
+              id: 'default',
+              name: 'Default Layout',
+              showName: false,
+              backgroundColor: '#1a1a2e',
+              showBlackoutButton: true,
+              showLayoutSelector: true,
+              showSettingsButton: true,
+              sections: []
+            };
+          }
+          setActiveLayout(layout);
+        })
+        .catch(err => console.error('Failed to fetch config:', err));
+    };
+
+    fetchConfigData();
+
+    // Poll for pending requests every 3 seconds if editor
+    if (role === 'editor') {
+      const interval = setInterval(fetchConfigData, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [role]);
 
   // Apply background color to body element for full-width background
   useEffect(() => {
@@ -504,6 +523,11 @@ const Dashboard = () => {
           <button
             className={`blackout-btn ${state.blackout ? 'active' : ''}`}
             onClick={handleBlackout}
+            disabled={role === 'viewer'}
+            style={{
+              opacity: role === 'viewer' ? 0.5 : 1,
+              cursor: role === 'viewer' ? 'not-allowed' : 'pointer'
+            }}
           >
             {state.blackout ? 'Restore' : 'Blackout'}
           </button>
@@ -513,6 +537,62 @@ const Dashboard = () => {
       {!connected && (
         <div className="card" style={{ background: '#6c4a00', marginBottom: '16px' }}>
           <p style={{ margin: 0, fontSize: '16px' }}>⚠ Disconnected - Reconnecting...</p>
+        </div>
+      )}
+
+      {role === 'editor' && pendingRequests.length > 0 && (
+        <div className="card" style={{ background: '#4a3a2a', marginBottom: '16px', border: '2px solid #e2904a' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+            <div>
+              <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#e2904a' }}>
+                🔔 Access Request{pendingRequests.length > 1 ? 's' : ''}
+              </p>
+              <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#888' }}>
+                {pendingRequests.length} user{pendingRequests.length > 1 ? 's' : ''} requesting controller access
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => navigate('/settings?tab=users')}
+                style={{
+                  background: '#e2904a',
+                  color: '#fff',
+                  padding: '10px 20px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Review Requests
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {role === 'viewer' && (
+        <div className="card" style={{ background: '#2a2a4a', marginBottom: '16px', border: '2px solid #4a90e2' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
+            <div>
+              <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#4a90e2' }}>
+                Viewing Only
+              </p>
+              <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#888' }}>
+                You can see the controls but cannot make changes. Your ID: {shortId}
+              </p>
+            </div>
+            <button
+              className="btn btn-primary"
+              onClick={requestAccess}
+              style={{
+                background: '#4a90e2',
+                color: '#fff',
+                padding: '10px 20px',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              Request Access
+            </button>
+          </div>
         </div>
       )}
 
@@ -597,18 +677,22 @@ const Dashboard = () => {
                         onChange={(value) => handleLookChange(look.id, value)}
                         unit="%"
                         color={look.color || 'blue'}
+                        disabled={role === 'viewer'}
                       />
                     </div>
                     {look.showRecordButton && (
                       <button
                         className={`btn btn-small record-btn ${recordingLook === look.id ? 'recording' : ''}`}
                         onClick={() => handleRecordLook(look.id)}
+                        disabled={role === 'viewer'}
                         style={{
                           padding: '6px 10px',
                           fontSize: '12px',
                           whiteSpace: 'nowrap',
                           background: '#444',
-                          border: '1px solid #666'
+                          border: '1px solid #666',
+                          opacity: role === 'viewer' ? 0.5 : 1,
+                          cursor: role === 'viewer' ? 'not-allowed' : 'pointer'
                         }}
                         title="Record current fixture values to this look"
                       >
@@ -697,6 +781,7 @@ const Dashboard = () => {
                             isFrozen={meta.frozen || false}
                             lookIntensity={meta.lookIntensity}
                             hasManualValue={manuallyAdjusted[key] || false}
+                            disabled={role === 'viewer'}
                           />
                         );
                       })}
@@ -710,11 +795,13 @@ const Dashboard = () => {
         );
       })}
 
-      {activeLayout.showSettingsButton !== false && (
+      {activeLayout.showSettingsButton !== false && role === 'editor' && (
         <button className="settings-btn" onClick={() => navigate('/settings')}>
           ⚙
         </button>
       )}
+
+      <ConnectedUsers activeClients={activeClients} show={activeLayout?.showConnectedUsers !== false} />
     </div>
   );
 };

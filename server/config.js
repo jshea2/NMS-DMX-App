@@ -55,6 +55,13 @@ const DEFAULT_CONFIG = {
     port: 3000,
     bindAddress: '0.0.0.0' // 0.0.0.0 = all interfaces, or specify IP for one interface
   },
+  webServer: {
+    passcode: '',
+    passcodeEnabled: false,
+    showConnectedUsers: true, // Show bottom-left connected users indicator
+    defaultClientRole: 'viewer' // Default role for new clients: 'viewer', 'controller', or 'editor'
+  },
+  clients: [],
   fixtures: [
     {
       id: 'panel1',
@@ -188,6 +195,7 @@ class Config {
         title: "Lighting",
         showBlackoutButton: true,
         showLayoutSelector: true,
+        showConnectedUsers: true,
         sections: []
       };
 

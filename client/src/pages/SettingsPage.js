@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
+import useWebSocket from '../hooks/useWebSocket';
+import ConnectedUsers from '../components/ConnectedUsers';
+import { QRCodeCanvas } from 'qrcode.react';
 
 // Color options for look themes
 const LOOK_COLORS = [
@@ -20,11 +23,14 @@ const TABS = [
   { id: 'looks', label: 'Looks' },
   { id: 'cuelist', label: 'Cue List' },
   { id: 'network', label: 'Networking / IO' },
+  { id: 'users', label: 'Users and Access' },
   { id: 'export', label: 'Export / Import' },
 ];
 
 const SettingsPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { activeClients } = useWebSocket();
   const [config, setConfig] = useState(null);
   const [originalConfig, setOriginalConfig] = useState(null);  // Track original for comparison
   const [saved, setSaved] = useState(false);
@@ -33,7 +39,11 @@ const SettingsPage = () => {
   const [pendingNavigation, setPendingNavigation] = useState(null);
   const [networkInterfaces, setNetworkInterfaces] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
-  const [activeTab, setActiveTab] = useState('showlayout');
+
+  // Check URL query params for initial tab
+  const queryParams = new URLSearchParams(location.search);
+  const initialTab = queryParams.get('tab') || 'showlayout';
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [collapsedSections, setCollapsedSections] = useState({});
   const [collapsedProfiles, setCollapsedProfiles] = useState({});
   const [collapsedFixtures, setCollapsedFixtures] = useState({});
@@ -55,17 +65,35 @@ const SettingsPage = () => {
     fetchNetworkInterfaces();
   }, []);
 
+  // Refetch config when active clients change (to update client list and pending requests)
+  useEffect(() => {
+    if (activeClients.length > 0) {
+      fetchConfig();
+    }
+  }, [activeClients]);
+
+  // Poll for config updates when on users tab (to catch pending access requests)
+  useEffect(() => {
+    if (activeTab !== 'users') return;
+
+    const interval = setInterval(() => {
+      fetchConfig();
+    }, 2000); // Check every 2 seconds for pending requests
+
+    return () => clearInterval(interval);
+  }, [activeTab]);
+
   // Fetch DMX data when on patching tab
   useEffect(() => {
     if (activeTab !== 'patching') return;
-    
+
     const fetchDmxOutput = () => {
       fetch('/api/dmx-output')
         .then(res => res.json())
         .then(data => setDmxData(data))
         .catch(err => console.error('Failed to fetch DMX output:', err));
     };
-    
+
     fetchDmxOutput();
     const interval = setInterval(fetchDmxOutput, 100); // Update 10 times per second
     return () => clearInterval(interval);
@@ -955,6 +983,23 @@ const SettingsPage = () => {
     setDuplicateFixtureIndex(null);
   };
 
+  // === QR CODE FUNCTIONS ===
+  const downloadQRCode = (interfaceAddress) => {
+    const canvas = document.getElementById(`qr-canvas-${interfaceAddress}`)?.querySelector('canvas');
+    if (canvas) {
+      const url = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = `dmx-control-${interfaceAddress}.png`;
+      link.href = url;
+      link.click();
+    }
+  };
+
+  const getQRCodeURL = (interfaceAddress) => {
+    const port = window.location.port || 3000;
+    return `http://${interfaceAddress}:${port}`;
+  };
+
   // === LOOK FUNCTIONS ===
   const addLook = () => {
     const newConfig = { ...config };
@@ -1343,14 +1388,19 @@ const SettingsPage = () => {
             </>
           )}
         </div>
+      </div>
+      )}
 
+      {/* Users and Access Tab */}
+      {activeTab === 'users' && (
+      <div className="card">
         <div className="settings-section">
-          <h3 
-            onClick={() => toggleSection('server')} 
+          <h3
+            onClick={() => toggleSection('server')}
             style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             <span style={{ transition: 'transform 0.2s', transform: collapsedSections.server ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▼</span>
-            Web Server Network
+            Network Access QR Codes
           </h3>
 
           {!collapsedSections.server && (
@@ -1377,6 +1427,279 @@ const SettingsPage = () => {
             />
             <small>0.0.0.0 = all interfaces, or specify IP for one interface (restart required)</small>
           </div>
+
+          <div className="form-group">
+            <p style={{ fontSize: '13px', color: '#888', marginBottom: '12px' }}>
+              Scan QR codes with mobile devices for easy access to the control interface
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {networkInterfaces.map((iface) => (
+                <div
+                  key={iface.address}
+                  style={{
+                    padding: '12px',
+                    background: '#1a1a2e',
+                    borderRadius: '8px',
+                    border: '2px solid #333'
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span style={{ fontSize: '14px', fontWeight: '600' }}>
+                      {iface.label}
+                    </span>
+                  </div>
+
+                  <div style={{ textAlign: 'center', marginTop: '12px' }}>
+                    <div
+                      id={`qr-canvas-${iface.address}`}
+                      style={{
+                        background: 'white',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        display: 'inline-block',
+                        marginBottom: '12px'
+                      }}
+                    >
+                      <QRCodeCanvas
+                        value={getQRCodeURL(iface.address)}
+                        size={150}
+                        level="M"
+                      />
+                    </div>
+                    <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px', fontFamily: 'monospace' }}>
+                      {getQRCodeURL(iface.address)}
+                    </p>
+                    <button
+                      onClick={() => downloadQRCode(iface.address)}
+                      style={{
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        background: '#4ae24a',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: '600'
+                      }}
+                    >
+                      Download PNG
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+            </>
+          )}
+        </div>
+
+        <div className="settings-section">
+          <h3
+            onClick={() => toggleSection('webServer')}
+            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+          >
+            <span style={{ transition: 'transform 0.2s', transform: collapsedSections.webServer ? 'rotate(-90deg)' : 'rotate(0deg)' }}>▼</span>
+            Client Access Control
+          </h3>
+
+          {!collapsedSections.webServer && (
+            <>
+              <div className="form-group">
+                <label>New Clients Default Role</label>
+                <select
+                  value={config.webServer?.defaultClientRole || 'viewer'}
+                  onChange={(e) => updateConfig('webServer.defaultClientRole', e.target.value)}
+                >
+                  <option value="viewer">Viewer (View Only)</option>
+                  <option value="controller">Controller (Can Control Lights)</option>
+                  <option value="editor">Editor (Full Access)</option>
+                </select>
+                <small>New clients will be assigned this role by default (Localhost is always Editor)</small>
+              </div>
+
+              <div style={{ marginTop: '16px' }}>
+                <h4 style={{ marginBottom: '12px', fontSize: '15px' }}>Client List</h4>
+                <p style={{ fontSize: '13px', color: '#888', marginBottom: '12px' }}>
+                  Manage which devices can view or edit your lighting control. Localhost is always Editor.
+                </p>
+
+                {(!config.clients || config.clients.length === 0) && (
+                  <p style={{ fontSize: '13px', color: '#666', fontStyle: 'italic', padding: '16px', background: '#1a1a2e', borderRadius: '6px' }}>
+                    No clients have connected yet. Clients will appear here when they access the app.
+                  </p>
+                )}
+
+                {config.clients && config.clients.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {config.clients.map((client) => {
+                      const isActive = activeClients.some(ac => ac.id === client.id);
+                      const shortId = client.id.substring(0, 6).toUpperCase();
+
+                      return (
+                        <div
+                          key={client.id}
+                          style={{
+                            padding: '12px',
+                            background: '#1a1a2e',
+                            borderRadius: '6px',
+                            border: `2px solid ${isActive ? '#4ae24a' : '#333'}`,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px'
+                          }}
+                        >
+                          {/* Status indicator */}
+                          <div
+                            style={{
+                              width: '10px',
+                              height: '10px',
+                              borderRadius: '50%',
+                              background: isActive ? '#4ae24a' : '#666',
+                              flexShrink: 0
+                            }}
+                            title={isActive ? 'Connected' : 'Disconnected'}
+                          />
+
+                          {/* Client info */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                              <span style={{ fontWeight: '600', fontSize: '13px' }}>
+                                {shortId}
+                              </span>
+                              {client.nickname && (
+                                <span style={{ color: '#888', fontSize: '12px' }}>
+                                  - {client.nickname}
+                                </span>
+                              )}
+                              <span
+                                style={{
+                                  fontSize: '11px',
+                                  padding: '2px 6px',
+                                  borderRadius: '3px',
+                                  background: client.role === 'editor' ? '#2a4a2a' : client.role === 'controller' ? '#4a3a2a' : '#2a2a4a',
+                                  color: client.role === 'editor' ? '#4ae24a' : client.role === 'controller' ? '#e2904a' : '#4a90e2'
+                                }}
+                              >
+                                {client.role.toUpperCase()}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '11px', color: '#666' }}>
+                              Last seen: {new Date(client.lastSeen).toLocaleString()} • IP: {client.lastIp}
+                            </div>
+
+                            {/* Nickname input */}
+                            <input
+                              type="text"
+                              value={client.nickname || ''}
+                              onChange={(e) => {
+                                const newConfig = { ...config };
+                                const clientEntry = newConfig.clients.find(c => c.id === client.id);
+                                if (clientEntry) {
+                                  clientEntry.nickname = e.target.value;
+                                  setConfig(newConfig);
+                                }
+                              }}
+                              onBlur={() => {
+                                // Save to server when done editing
+                                fetch(`/api/clients/${client.id}/nickname`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ nickname: client.nickname || '' })
+                                });
+                              }}
+                              placeholder="Add nickname..."
+                              style={{
+                                marginTop: '8px',
+                                width: '100%',
+                                padding: '6px 8px',
+                                fontSize: '12px',
+                                background: '#252538',
+                                border: '1px solid #333',
+                                borderRadius: '4px',
+                                color: '#f0f0f0'
+                              }}
+                            />
+                          </div>
+
+                          {/* Actions */}
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                            {client.pendingRequest && (
+                              <button
+                                className="btn btn-primary"
+                                onClick={() => {
+                                  fetch(`/api/clients/${client.id}/approve`, {
+                                    method: 'POST'
+                                  })
+                                    .then(res => res.json())
+                                    .then(() => {
+                                      fetchConfig();
+                                    });
+                                }}
+                                style={{
+                                  padding: '6px 12px',
+                                  fontSize: '12px',
+                                  background: '#4ae24a',
+                                  color: '#000'
+                                }}
+                              >
+                                Approve
+                              </button>
+                            )}
+
+                            {!client.pendingRequest && (
+                              <select
+                                value={client.role}
+                                onChange={(e) => {
+                                  fetch(`/api/clients/${client.id}/role`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ role: e.target.value })
+                                  })
+                                    .then(res => res.json())
+                                    .then(() => {
+                                      fetchConfig();
+                                    });
+                                }}
+                                style={{
+                                  padding: '6px 8px',
+                                  fontSize: '12px',
+                                  background: '#252538',
+                                  border: '1px solid #333',
+                                  borderRadius: '4px',
+                                  color: '#f0f0f0'
+                                }}
+                              >
+                                <option value="viewer">Viewer</option>
+                                <option value="controller">Controller</option>
+                                <option value="editor">Editor</option>
+                              </select>
+                            )}
+
+                            <button
+                              className="btn btn-danger btn-small"
+                              onClick={() => {
+                                if (window.confirm(`Remove client ${shortId}?`)) {
+                                  fetch(`/api/clients/${client.id}`, {
+                                    method: 'DELETE'
+                                  })
+                                    .then(res => res.json())
+                                    .then(() => {
+                                      fetchConfig();
+                                    });
+                                }
+                              }}
+                              style={{ padding: '6px 8px', fontSize: '12px' }}
+                              title="Remove Client"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -2252,6 +2575,16 @@ const SettingsPage = () => {
                       />
                       <label htmlFor={`showSettingsButton-${layout.id}`}>Show Settings Button</label>
                     </div>
+
+                    <div className="form-group checkbox-group">
+                      <input
+                        type="checkbox"
+                        id={`showConnectedUsers-${layout.id}`}
+                        checked={layout.showConnectedUsers !== false}
+                        onChange={(e) => updateShowLayout(layoutIndex, 'showConnectedUsers', e.target.checked)}
+                      />
+                      <label htmlFor={`showConnectedUsers-${layout.id}`}>Show Connected Users Indicator</label>
+                    </div>
                   </div>
 
                   {/* Sections Configuration */}
@@ -2602,6 +2935,8 @@ const SettingsPage = () => {
 
         </div>{/* End Tab Content */}
       </div>{/* End Main Layout */}
+
+      <ConnectedUsers activeClients={activeClients} show={true} />
     </div>
   );
 };

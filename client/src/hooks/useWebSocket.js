@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { getClientId } from '../utils/clientIdentity';
 
 const useWebSocket = () => {
   const [state, setState] = useState({
@@ -17,8 +18,14 @@ const useWebSocket = () => {
   });
 
   const [connected, setConnected] = useState(false);
+  const [role, setRole] = useState('viewer'); // viewer or editor
+  const [shortId, setShortId] = useState('');
+  const [activeClients, setActiveClients] = useState([]);
+  const [showConnectedUsers, setShowConnectedUsers] = useState(true);
+
   const ws = useRef(null);
   const reconnectTimeout = useRef(null);
+  const authenticated = useRef(false);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -31,13 +38,36 @@ const useWebSocket = () => {
     ws.current.onopen = () => {
       console.log('WebSocket connected');
       setConnected(true);
+      authenticated.current = false;
+
+      // Send authentication
+      const clientId = getClientId();
+      ws.current.send(JSON.stringify({
+        type: 'auth',
+        clientId: clientId
+      }));
     };
 
     ws.current.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
+
         if (message.type === 'state') {
           setState(message.data);
+        } else if (message.type === 'authResult') {
+          authenticated.current = true;
+          setRole(message.role);
+          setShortId(message.shortId);
+          console.log(`Authenticated as ${message.role} (${message.shortId})`);
+        } else if (message.type === 'roleUpdate') {
+          setRole(message.role);
+          console.log(`Role updated to ${message.role}`);
+        } else if (message.type === 'activeClients') {
+          setActiveClients(message.clients || []);
+          setShowConnectedUsers(message.showConnectedUsers !== false);
+        } else if (message.type === 'permissionDenied') {
+          console.warn('Permission denied:', message.message);
+          alert(message.message);
         }
       } catch (error) {
         console.error('WebSocket message error:', error);
@@ -47,6 +77,7 @@ const useWebSocket = () => {
     ws.current.onclose = () => {
       console.log('WebSocket disconnected');
       setConnected(false);
+      authenticated.current = false;
 
       // Attempt to reconnect after 2 seconds
       reconnectTimeout.current = setTimeout(() => {
@@ -82,7 +113,24 @@ const useWebSocket = () => {
     }
   }, []);
 
-  return { state, sendUpdate, connected };
+  const requestAccess = useCallback(() => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: 'requestAccess'
+      }));
+    }
+  }, []);
+
+  return {
+    state,
+    sendUpdate,
+    connected,
+    role,
+    shortId,
+    requestAccess,
+    activeClients,
+    showConnectedUsers
+  };
 };
 
 export default useWebSocket;

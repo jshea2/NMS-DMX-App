@@ -13,7 +13,8 @@ const Slider = ({
   isOverridden = false,  // Boolean: is this channel overridden?
   isFrozen = false,      // Boolean: is this channel frozen after recording?
   lookIntensity = 1,     // Float 0-1: highest look intensity controlling this channel
-  hasManualValue = false // Boolean: has channel been manually adjusted?
+  hasManualValue = false, // Boolean: has channel been manually adjusted?
+  disabled = false       // Boolean: disable slider for viewers
 }) => {
   const displayValue = unit === '°' ? Math.round(value) : Math.round(value);
 
@@ -162,13 +163,16 @@ const Slider = ({
         step={step}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
+        disabled={disabled}
         className={getThumbClass()}
         style={{
           ...getSliderStyle(),
           ...trackOutlineStyle,
           ...getLookThumbStyle(),
           position: 'relative',
-          zIndex: 1
+          zIndex: 1,
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer'
         }}
       />
     </div>
