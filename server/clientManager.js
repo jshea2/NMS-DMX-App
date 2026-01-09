@@ -143,6 +143,31 @@ class ClientManager {
     return false;
   }
 
+  // Deny client access request
+  denyClient(clientId) {
+    const currentConfig = config.get();
+    const client = currentConfig.clients.find(c => c.id === clientId);
+
+    if (client) {
+      client.pendingRequest = false;
+      config.update(currentConfig);
+      console.log(`Client denied: ${clientId.substring(0, 6)} access request rejected`);
+
+      // Notify the client if they're connected
+      const connection = this.getActive(clientId);
+      if (connection && connection.ws) {
+        connection.ws.send(JSON.stringify({
+          type: 'accessDenied',
+          message: 'Your access request was denied'
+        }));
+      }
+
+      return true;
+    }
+
+    return false;
+  }
+
   // Update client role
   updateRole(clientId, role) {
     const currentConfig = config.get();
@@ -150,7 +175,7 @@ class ClientManager {
 
     if (client) {
       client.role = role;
-      if (role === 'controller' || role === 'editor') {
+      if (role === 'controller' || role === 'moderator' || role === 'editor') {
         client.pendingRequest = false;
       }
       config.update(currentConfig);
@@ -194,13 +219,18 @@ class ClientManager {
     }
 
     if (action === 'edit') {
-      // Both controller and editor can edit lights/looks
-      return client.role === 'controller' || client.role === 'editor';
+      // Controller, moderator, and editor can edit lights/looks
+      return client.role === 'controller' || client.role === 'moderator' || client.role === 'editor';
     }
 
     if (action === 'settings') {
-      // Only editor can access settings
+      // Only editor can access full settings
       return client.role === 'editor';
+    }
+
+    if (action === 'manageUsers') {
+      // Moderators and editors can manage users
+      return client.role === 'moderator' || client.role === 'editor';
     }
 
     // Viewers can view

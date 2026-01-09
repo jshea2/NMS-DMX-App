@@ -143,7 +143,6 @@ const Dashboard = () => {
   const [channelOverrides, setChannelOverrides] = useState({});
   const [manuallyAdjusted, setManuallyAdjusted] = useState({});  // Tracks channels manually touched
   const [frozenChannels, setFrozenChannels] = useState({});  // Tracks frozen values after recording {key: frozenValue}
-  const [pendingRequests, setPendingRequests] = useState([]);
 
   // Compute HTP metadata
   const { metadata: htpMetadata, channelsToRelease } = useHTPMetadata(state, config, channelOverrides, frozenChannels);
@@ -182,12 +181,6 @@ const Dashboard = () => {
         .then(data => {
           setConfig(data);
 
-          // Check for pending access requests (only for editors)
-          if (role === 'editor' && data.clients) {
-            const pending = data.clients.filter(c => c.pendingRequest === true);
-            setPendingRequests(pending);
-          }
-
           // Find active layout by activeLayoutId or fall back to first layout
           let layout;
           if (data.activeLayoutId) {
@@ -222,12 +215,6 @@ const Dashboard = () => {
     };
 
     fetchConfigData();
-
-    // Poll for pending requests every 3 seconds if editor
-    if (role === 'editor') {
-      const interval = setInterval(fetchConfigData, 3000);
-      return () => clearInterval(interval);
-    }
   }, [role]);
 
   // Apply background color to body element for full-width background
@@ -540,35 +527,6 @@ const Dashboard = () => {
         </div>
       )}
 
-      {role === 'editor' && pendingRequests.length > 0 && (
-        <div className="card" style={{ background: '#4a3a2a', marginBottom: '16px', border: '2px solid #e2904a' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
-            <div>
-              <p style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: '#e2904a' }}>
-                🔔 Access Request{pendingRequests.length > 1 ? 's' : ''}
-              </p>
-              <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#888' }}>
-                {pendingRequests.length} user{pendingRequests.length > 1 ? 's' : ''} requesting controller access
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                className="btn btn-primary"
-                onClick={() => navigate('/settings?tab=users')}
-                style={{
-                  background: '#e2904a',
-                  color: '#fff',
-                  padding: '10px 20px',
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                Review Requests
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {role === 'viewer' && (
         <div className="card" style={{ background: '#2a2a4a', marginBottom: '16px', border: '2px solid #4a90e2' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
@@ -577,7 +535,7 @@ const Dashboard = () => {
                 Viewing Only
               </p>
               <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#888' }}>
-                You can see the controls but cannot make changes. Your ID: {shortId}
+                User ID: {shortId}
               </p>
             </div>
             <button
@@ -798,6 +756,14 @@ const Dashboard = () => {
       {activeLayout.showSettingsButton !== false && role === 'editor' && (
         <button className="settings-btn" onClick={() => navigate('/settings')}>
           ⚙
+        </button>
+      )}
+
+      {role === 'moderator' && (
+        <button className="settings-btn" onClick={() => navigate('/settings?tab=users')} title="Users and Access">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
         </button>
       )}
 

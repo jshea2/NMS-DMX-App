@@ -60,13 +60,19 @@ const useWebSocket = () => {
           setShortId(message.shortId);
           console.log(`Authenticated as ${message.role} (${message.shortId})`);
         } else if (message.type === 'roleUpdate') {
+          console.log(`[WebSocket] Role update received: ${message.role}`);
           setRole(message.role);
-          console.log(`Role updated to ${message.role}`);
+          // Force a page reload to ensure all UI elements update with new permissions
+          console.log('[WebSocket] Reloading page to apply new permissions');
+          setTimeout(() => window.location.reload(), 500);
         } else if (message.type === 'activeClients') {
           setActiveClients(message.clients || []);
           setShowConnectedUsers(message.showConnectedUsers !== false);
         } else if (message.type === 'permissionDenied') {
           console.warn('Permission denied:', message.message);
+          alert(message.message);
+        } else if (message.type === 'accessDenied') {
+          console.warn('Access denied:', message.message);
           alert(message.message);
         }
       } catch (error) {

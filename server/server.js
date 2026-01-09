@@ -144,11 +144,22 @@ app.post('/api/clients/:clientId/approve', (req, res) => {
   }
 });
 
+app.post('/api/clients/:clientId/deny', (req, res) => {
+  const { clientId } = req.params;
+  const success = clientManager.denyClient(clientId);
+  if (success) {
+    broadcastActiveClients();
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ success: false, error: 'Client not found' });
+  }
+});
+
 app.post('/api/clients/:clientId/role', (req, res) => {
   const { clientId } = req.params;
   const { role } = req.body;
 
-  if (!['viewer', 'controller', 'editor'].includes(role)) {
+  if (!['viewer', 'controller', 'moderator', 'editor'].includes(role)) {
     return res.status(400).json({ success: false, error: 'Invalid role' });
   }
 

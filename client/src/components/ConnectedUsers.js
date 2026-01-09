@@ -51,13 +51,19 @@ const ConnectedUsers = ({ activeClients, show }) => {
                 fontSize: '10px',
                 padding: '2px 4px',
                 borderRadius: '3px',
-                background: client.role === 'editor' ? '#2a4a2a' : client.role === 'controller' ? '#4a3a2a' : '#2a2a4a',
-                color: client.role === 'editor' ? '#4ae24a' : client.role === 'controller' ? '#e2904a' : '#4a90e2',
+                background: client.role === 'editor' ? '#2a4a2a' :
+                           client.role === 'moderator' ? '#4a2a4a' :
+                           client.role === 'controller' ? '#4a3a2a' : '#2a2a4a',
+                color: client.role === 'editor' ? '#4ae24a' :
+                       client.role === 'moderator' ? '#e24ae2' :
+                       client.role === 'controller' ? '#e2904a' : '#4a90e2',
                 textTransform: 'uppercase',
                 fontWeight: '600'
               }}
             >
-              {client.role === 'editor' ? 'E' : client.role === 'controller' ? 'C' : 'V'}
+              {client.role === 'editor' ? 'E' :
+               client.role === 'moderator' ? 'M' :
+               client.role === 'controller' ? 'C' : 'V'}
             </span>
           </div>
         ))}

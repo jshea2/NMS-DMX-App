@@ -30,7 +30,7 @@ const TABS = [
 const SettingsPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { activeClients } = useWebSocket();
+  const { activeClients, role } = useWebSocket();
   const [config, setConfig] = useState(null);
   const [originalConfig, setOriginalConfig] = useState(null);  // Track original for comparison
   const [saved, setSaved] = useState(false);
@@ -40,9 +40,11 @@ const SettingsPage = () => {
   const [networkInterfaces, setNetworkInterfaces] = useState([]);
   const [draggedItem, setDraggedItem] = useState(null);
 
-  // Check URL query params for initial tab
+  // Check URL query params for initial tab, or use last visited tab from localStorage
   const queryParams = new URLSearchParams(location.search);
-  const initialTab = queryParams.get('tab') || 'showlayout';
+  const tabFromUrl = queryParams.get('tab');
+  const lastVisitedTab = localStorage.getItem('settings_last_tab');
+  const initialTab = tabFromUrl || lastVisitedTab || 'showlayout';
   const [activeTab, setActiveTab] = useState(initialTab);
   const [collapsedSections, setCollapsedSections] = useState({});
   const [collapsedProfiles, setCollapsedProfiles] = useState({});
@@ -72,16 +74,38 @@ const SettingsPage = () => {
     }
   }, [activeClients]);
 
+  // Watch for URL changes and update active tab
+  useEffect(() => {
+    const handleLocationChange = () => {
+      const queryParams = new URLSearchParams(window.location.search);
+      const tabFromUrl = queryParams.get('tab');
+      if (tabFromUrl && tabFromUrl !== activeTab) {
+        setActiveTab(tabFromUrl);
+      }
+    };
+
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
+  }, [activeTab]);
+
+  // Save active tab to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('settings_last_tab', activeTab);
+  }, [activeTab]);
+
   // Poll for config updates when on users tab (to catch pending access requests)
   useEffect(() => {
     if (activeTab !== 'users') return;
 
     const interval = setInterval(() => {
-      fetchConfig();
+      // Only refetch if there are no unsaved changes
+      if (!hasUnsavedChanges) {
+        fetchConfig();
+      }
     }, 2000); // Check every 2 seconds for pending requests
 
     return () => clearInterval(interval);
-  }, [activeTab]);
+  }, [activeTab, hasUnsavedChanges]);
 
   // Fetch DMX data when on patching tab
   useEffect(() => {
@@ -228,6 +252,10 @@ const SettingsPage = () => {
     let current = newConfig;
     const keys = path.split('.');
     for (let i = 0; i < keys.length - 1; i++) {
+      // Create nested object if it doesn't exist
+      if (!current[keys[i]]) {
+        current[keys[i]] = {};
+      }
       current = current[keys[i]];
     }
     current[keys[keys.length - 1]] = value;
@@ -1235,7 +1263,13 @@ const SettingsPage = () => {
           top: '0',
           alignSelf: 'flex-start'
         }}>
-          {TABS.map(tab => (
+          {TABS.filter(tab => {
+            // Moderators can only see Users and Access tab
+            if (role === 'moderator') {
+              return tab.id === 'users';
+            }
+            return true; // Show all tabs for editors and other roles
+          }).map(tab => (
             <button
               key={tab.id}
               className={`btn tab-btn ${activeTab === tab.id ? 'active' : ''}`}
@@ -1413,6 +1447,8 @@ const SettingsPage = () => {
               max="65535"
               value={config.server?.port || 3001}
               onChange={(e) => updateConfig('server.port', parseInt(e.target.value))}
+              disabled={role === 'moderator'}
+              style={{ opacity: role === 'moderator' ? 0.6 : 1, cursor: role === 'moderator' ? 'not-allowed' : 'text' }}
             />
             <small>Default: 3001 (restart required after change)</small>
           </div>
@@ -1423,6 +1459,8 @@ const SettingsPage = () => {
               type="text"
               value={config.server?.bindAddress || '0.0.0.0'}
               onChange={(e) => updateConfig('server.bindAddress', e.target.value)}
+              disabled={role === 'moderator'}
+              style={{ opacity: role === 'moderator' ? 0.6 : 1, cursor: role === 'moderator' ? 'not-allowed' : 'text' }}
               placeholder="0.0.0.0"
             />
             <small>0.0.0.0 = all interfaces, or specify IP for one interface (restart required)</small>
@@ -1493,6 +1531,8 @@ const SettingsPage = () => {
           )}
         </div>
 
+        {/* Client Access Control - Hidden for moderators */}
+        {role === 'editor' && (
         <div className="settings-section">
           <h3
             onClick={() => toggleSection('webServer')}
@@ -1512,6 +1552,7 @@ const SettingsPage = () => {
                 >
                   <option value="viewer">Viewer (View Only)</option>
                   <option value="controller">Controller (Can Control Lights)</option>
+                  <option value="moderator">Moderator (Can Manage Users)</option>
                   <option value="editor">Editor (Full Access)</option>
                 </select>
                 <small>New clients will be assigned this role by default (Localhost is always Editor)</small>
@@ -1624,26 +1665,48 @@ const SettingsPage = () => {
                           {/* Actions */}
                           <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                             {client.pendingRequest && (
-                              <button
-                                className="btn btn-primary"
-                                onClick={() => {
-                                  fetch(`/api/clients/${client.id}/approve`, {
-                                    method: 'POST'
-                                  })
-                                    .then(res => res.json())
-                                    .then(() => {
-                                      fetchConfig();
-                                    });
-                                }}
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '12px',
-                                  background: '#4ae24a',
-                                  color: '#000'
-                                }}
-                              >
-                                Approve
-                              </button>
+                              <>
+                                <button
+                                  className="btn btn-primary"
+                                  onClick={() => {
+                                    fetch(`/api/clients/${client.id}/approve`, {
+                                      method: 'POST'
+                                    })
+                                      .then(res => res.json())
+                                      .then(() => {
+                                        fetchConfig();
+                                      });
+                                  }}
+                                  style={{
+                                    padding: '6px 12px',
+                                    fontSize: '12px',
+                                    background: '#4ae24a',
+                                    color: '#000'
+                                  }}
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  className="btn btn-danger"
+                                  onClick={() => {
+                                    fetch(`/api/clients/${client.id}/deny`, {
+                                      method: 'POST'
+                                    })
+                                      .then(res => res.json())
+                                      .then(() => {
+                                        fetchConfig();
+                                      });
+                                  }}
+                                  style={{
+                                    padding: '6px 12px',
+                                    fontSize: '12px',
+                                    background: '#e24a4a',
+                                    color: '#fff'
+                                  }}
+                                >
+                                  Deny
+                                </button>
+                              </>
                             )}
 
                             {!client.pendingRequest && (
@@ -1660,18 +1723,22 @@ const SettingsPage = () => {
                                       fetchConfig();
                                     });
                                 }}
+                                disabled={role === 'moderator' && (client.role === 'moderator' || client.role === 'editor')}
                                 style={{
                                   padding: '6px 8px',
                                   fontSize: '12px',
                                   background: '#252538',
                                   border: '1px solid #333',
                                   borderRadius: '4px',
-                                  color: '#f0f0f0'
+                                  color: '#f0f0f0',
+                                  opacity: role === 'moderator' && (client.role === 'moderator' || client.role === 'editor') ? 0.5 : 1,
+                                  cursor: role === 'moderator' && (client.role === 'moderator' || client.role === 'editor') ? 'not-allowed' : 'pointer'
                                 }}
                               >
                                 <option value="viewer">Viewer</option>
                                 <option value="controller">Controller</option>
-                                <option value="editor">Editor</option>
+                                {role === 'editor' && <option value="moderator">Moderator</option>}
+                                {role === 'editor' && <option value="editor">Editor</option>}
                               </select>
                             )}
 
@@ -1703,6 +1770,7 @@ const SettingsPage = () => {
             </>
           )}
         </div>
+        )}
       </div>
       )}
 
